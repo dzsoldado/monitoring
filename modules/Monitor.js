@@ -1,6 +1,9 @@
 
 const Emailer = require("./Emailer")
+const logger = require("../utils/logger")
 
+
+const SIX_HOURS_IN_MILLISECONDS = 6 * 60 * 60 * 1000
 
 class Monitor {
 
@@ -11,19 +14,26 @@ class Monitor {
     this.wasMainServerDown = false;
     this.wasApiClientDown = false;
     this.wasApiServerDown = false;
+    this.lastTimeNotified = null;
 
     this.emailer = new Emailer();
   }
 
   async checkStatus() {
+    this.wasMainServerDown = false;
+    this.wasApiClientDown = false;
+    this.wasApiServerDown = false;
+
+    let response, responseJson
     try {
-      this.wasMainServerDown = false;
-      this.wasApiClientDown = false;
-      this.wasApiServerDown = false;
+      response = await fetch(process.env.HEALTH_ENDPOINT)
+      responseJson = await response.json()
+    } catch (e) {
+      // Server is not responding: it's down
+      this.mainServerIsDown();
+    }
 
-      const response = await fetch(process.env.HEALTH_ENDPOINT)
-      const responseJson = await response.json()
-
+    if (response && responseJson) {
       // Server is responding: it's up
       this.mainServerIsUp()
 
@@ -42,17 +52,21 @@ class Monitor {
       } else {
         this.apiServerIsUp()
       }
+    }
 
-      // all servers are up, and at least one of them was down before...
-      if (this.areAllServersBackUp) {
-        this.emailer.emailAllGood()
-        console.log("All are up now")
+    // all servers are up, and at least one of them was down before
+    if (this.areAllServersBackUp) {
+      this.emailer.emailAllGood()
+      this.lastTimeNotified = null;
+      logger.info("All services are up now")
+    } else {
+      // If the server hasn't been up for x amount of time already
+      if (this.lastTimeNotified &&
+        new Date().getTime() > (this.lastTimeNotified.getTime() + SIX_HOURS_IN_MILLISECONDS)) {
+        this.lastTimeNotified = new Date();
+        logger.info("The servers haven't been restored for a while");
+        this.emailer.emailReminder()
       }
-
-
-    } catch (e) {
-      // Server is not responding: it's down
-      this.mainServerIsDown();
     }
 
   }
@@ -75,27 +89,30 @@ class Monitor {
   mainServerIsDown() {
     this.wasMainServerDown = this.isMainServerDown;
     this.isMainServerDown = true;
+    logger.warn("Main server is down")
     if (!this.wasMainServerDown) {
-      console.log("main is down")
       this.emailer.emailMainServerDown()
+      this.lastTimeNotified = new Date()
     }
   }
 
   apiClientIsDown() {
     this.wasApiClientDown = this.isApiClientDown;
     this.isApiClientDown = true;
+    logger.warn("Api client is down")
     if (!this.wasApiClientDown) {
       this.emailer.emailApiClientDown()
-      console.log("api client is down")
+      this.lastTimeNotified = new Date()
     }
   }
 
   apiServerIsDown() {
     this.wasApiServerDown = this.isApiServerDown;
     this.isApiServerDown = true;
+    logger.warn("Api server is down")
     if (!this.wasApiServerDown) {
       this.emailer.emailApiServerDown()
-      console.log("api server is down")
+      this.lastTimeNotified = new Date()
     }
   }
 
@@ -109,7 +126,6 @@ class Monitor {
         | this.wasApiClientDown
         | this.wasApiServerDown
       )
-
   }
 }
 
